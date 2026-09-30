@@ -162,7 +162,17 @@ describe("Google Analytics MCP tools", () => {
       status: "ok",
       rowCount: 1,
       totalCandidateRows: 2,
-      rows: [{ page: "https://example.com/a", score: 90 }],
+      rows: [
+        {
+          page: "https://example.com/a",
+          score: null,
+          leadOrPurchaseKeyEvents: null,
+        },
+      ],
+      scoring: {
+        outcomeMeaning:
+          "GA4 key-event counts only; not qualified consultations",
+      },
       coverage: { matchedRows: 1 },
     });
     const { getSearchOpportunitiesTool } = tools;
@@ -178,6 +188,17 @@ describe("Google Analytics MCP tools", () => {
       status: "ok",
       rowCount: 1,
       totalCandidateRows: 2,
+      rows: [
+        {
+          page: "https://example.com/a",
+          score: null,
+          leadOrPurchaseKeyEvents: null,
+        },
+      ],
+      scoring: {
+        outcomeMeaning:
+          "GA4 key-event counts only; not qualified consultations",
+      },
     });
   });
 
