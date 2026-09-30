@@ -89,7 +89,27 @@ describe("SearchOpportunityService", () => {
     mocks.getGscConnection.mockResolvedValue({
       siteUrl: "https://example.com/",
     });
-    mocks.runGa4Report.mockResolvedValue(ga4Result);
+    mocks.runGa4Report.mockImplementation(async (input) =>
+      input.kind === "key_events"
+        ? makeGa4ReportResult({
+            ...ga4Result,
+            rows: [
+              {
+                hostName: "example.com",
+                landingPage: "/High-Value/",
+                eventName: "lead_submitted",
+                keyEvents: 10,
+              },
+              {
+                hostName: "example.com",
+                landingPage: "/other/",
+                eventName: "run_address_start",
+                keyEvents: 100,
+              },
+            ],
+          })
+        : ga4Result,
+    );
   });
 
   it("normalizes URLs, scores joined candidates, and leaves unmatched pages unscored", async () => {
@@ -165,11 +185,13 @@ describe("SearchOpportunityService", () => {
       score: null,
       scoreComponents: null,
     });
-    expect(result.scoring.businessValueMetric).toBe("sessionKeyEventRate");
+    expect(result.scoring.businessValueMetric).toBe(
+      "leadOrPurchaseEventsPerSession",
+    );
     expect(result.warnings).toContain("source_time_zones_differ");
   });
 
-  it("uses engagement rate when all joined rows have zero key events", async () => {
+  it("does not promote engagement or a tool start to business value", async () => {
     mocks.getPerformance.mockResolvedValue({
       siteUrl: "https://example.com/",
       request: {},
@@ -183,18 +205,15 @@ describe("SearchOpportunityService", () => {
         },
       ],
     });
-    mocks.runGa4Report.mockResolvedValue({
-      ...ga4Result,
-      rows: [{ ...ga4Result.rows[1], keyEvents: 0, sessionKeyEventRate: 0 }],
-      rowCount: 1,
-      totalRowCount: 1,
-    });
+
     const result = await SearchOpportunityService.getOpportunities({
       projectId: "project_1",
     });
+    expect(result.rows[0].leadOrPurchaseEvents).toBe(0);
+    expect(result.rows[0].scoreComponents?.businessValue).toBe(0);
     expect(result.scoring).toMatchObject({
-      engagementFallback: true,
-      businessValueMetric: "engagementRate",
+      engagementFallback: false,
+      businessValueMetric: "leadOrPurchaseEventsPerSession",
     });
   });
 
@@ -234,5 +253,118 @@ describe("SearchOpportunityService", () => {
     ).rejects.toBeInstanceOf(GscNotConnectedError);
     expect(mocks.getPerformance).not.toHaveBeenCalled();
     expect(mocks.runGa4Report).not.toHaveBeenCalled();
+  });
+  const onePage = () =>
+    mocks.getPerformance.mockResolvedValue({
+      siteUrl: "https://example.com/",
+      rows: [
+        {
+          keys: ["https://example.com/other"],
+          clicks: 1,
+          impressions: 100,
+          ctr: 0.01,
+          position: 10,
+        },
+      ],
+    });
+  it("preserves missing metrics and declines scoring without a session denominator", async () => {
+    onePage();
+    mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+      makeGa4ReportResult({
+        ...ga4Result,
+        rows:
+          kind === "landing_pages"
+            ? [{ hostName: "example.com", landingPage: "/other", keyEvents: 0 }]
+            : [],
+        totalRowCount: kind === "landing_pages" ? 1 : 0,
+      }),
+    );
+    const result = await SearchOpportunityService.getOpportunities({
+      projectId: "project_1",
+    });
+    expect(result.rows[0]).toMatchObject({
+      ga4: { sessions: null, activeUsers: null, keyEvents: 0 },
+      score: null,
+    });
+  });
+  it.each(["truncated", "thresholded", "missing count"])(
+    "does not infer zero outcomes from %s evidence",
+    async (failure) => {
+      onePage();
+      mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+        kind === "landing_pages"
+          ? ga4Result
+          : makeGa4ReportResult({
+              ...ga4Result,
+              rows:
+                failure === "missing count"
+                  ? [
+                      {
+                        hostName: "example.com",
+                        landingPage: "/other",
+                        eventName: "lead_submitted",
+                        keyEvents: null,
+                      },
+                    ]
+                  : [],
+              totalRowCount:
+                failure === "truncated"
+                  ? 1001
+                  : failure === "missing count"
+                    ? 1
+                    : 0,
+              reportMetadata: {
+                ...ga4Result.reportMetadata,
+                hasLimitedData: failure === "thresholded",
+              },
+            }),
+      );
+      const result = await SearchOpportunityService.getOpportunities({
+        projectId: "project_1",
+      });
+      expect(result.rows[0].leadOrPurchaseEvents).toBeNull();
+      expect(result.rows[0].score).toBeNull();
+    },
+  );
+  it("does not overwrite colliding analytics URLs or invent deduplicated users", async () => {
+    onePage();
+    mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+      kind === "landing_pages"
+        ? makeGa4ReportResult({
+            ...ga4Result,
+            rows: [
+              ga4Result.rows[1],
+              { ...ga4Result.rows[1], landingPage: "/other?ref=x" },
+            ],
+          })
+        : makeGa4ReportResult({ ...ga4Result, rows: [], totalRowCount: 0 }),
+    );
+    const result = await SearchOpportunityService.getOpportunities({
+      projectId: "project_1",
+    });
+    expect(result.rows[0]).toMatchObject({ ga4: null, score: null });
+    expect(result.coverage.ambiguousGa4Pages).toBe(1);
+    expect(result.warnings).toContain(
+      "ambiguous_normalized_ga4_pages_unjoined",
+    );
+  });
+  it("keeps different hosts and path case distinct", async () => {
+    mocks.getPerformance.mockResolvedValue({
+      siteUrl: "https://example.com/",
+      rows: ["https://www.example.com/other", "https://example.com/Other"].map(
+        (page) => ({
+          keys: [page],
+          clicks: 1,
+          impressions: 100,
+          ctr: 0.01,
+          position: 10,
+        }),
+      ),
+    });
+    const result = await SearchOpportunityService.getOpportunities({
+      projectId: "project_1",
+    });
+    expect(result.coverage.matchedRows).toBe(0);
+    expect(result.rows.every((row) => row.ga4 === null)).toBe(true);
   });
 });
