@@ -287,7 +287,7 @@ describe("SearchOpportunityService", () => {
       score: null,
     });
   });
-  it.each(["truncated", "thresholded", "missing count"])(
+  it.each(["truncated", "more flag", "thresholded", "missing count"])(
     "does not infer zero outcomes from %s evidence",
     async (failure) => {
       onePage();
@@ -297,22 +297,23 @@ describe("SearchOpportunityService", () => {
           : makeGa4ReportResult({
               ...ga4Result,
               rows:
-                failure === "missing count"
+                failure === "missing count" || failure === "more flag"
                   ? [
                       {
                         hostName: "example.com",
                         landingPage: "/other",
                         eventName: "lead_submitted",
-                        keyEvents: null,
+                        keyEvents: failure === "missing count" ? null : 2,
                       },
                     ]
                   : [],
               totalRowCount:
                 failure === "truncated"
                   ? 1001
-                  : failure === "missing count"
+                  : failure === "missing count" || failure === "more flag"
                     ? 1
                     : 0,
+              pageInfo: failure === "more flag" ? { hasMore: true } : undefined,
               reportMetadata: {
                 ...ga4Result.reportMetadata,
                 hasLimitedData: failure === "thresholded",
@@ -324,6 +325,11 @@ describe("SearchOpportunityService", () => {
       });
       expect(result.rows[0].leadOrPurchaseKeyEvents).toBeNull();
       expect(result.rows[0].score).toBeNull();
+      expect(result.truncated.outcomeEvents).toBe(
+        failure === "truncated" || failure === "more flag",
+      );
+      expect(result.scoring.scoreDataLimited).toBe(true);
+      expect(result.warnings).toContain("outcome_event_evidence_incomplete");
     },
   );
   it("does not overwrite colliding analytics URLs or invent deduplicated users", async () => {
@@ -433,4 +439,122 @@ describe("SearchOpportunityService", () => {
       result.rows.every((row) => row.score === null && row.ga4 === null),
     ).toBe(true);
   });
+
+  it.each(["GSC", "GA4"])(
+    "keeps outcome counts null for ambiguous normalized %s pages",
+    async (source) => {
+      mocks.getPerformance.mockResolvedValue({
+        siteUrl: "https://example.com/",
+        request: {},
+        rows:
+          source === "GSC"
+            ? [
+                "https://example.com/other",
+                "https://example.com/other/?ref=gsc",
+              ].map((page) => ({
+                keys: [page],
+                clicks: 1,
+                impressions: 100,
+                ctr: 0.01,
+                position: 10,
+              }))
+            : [
+                {
+                  keys: ["https://example.com/other"],
+                  clicks: 1,
+                  impressions: 100,
+                  ctr: 0.01,
+                  position: 10,
+                },
+              ],
+      });
+      mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+        kind === "landing_pages"
+          ? makeGa4ReportResult({
+              ...ga4Result,
+              rows:
+                source === "GA4"
+                  ? [
+                      {
+                        ...ga4Result.rows[1],
+                        landingPage: "/other/",
+                      },
+                      {
+                        ...ga4Result.rows[1],
+                        landingPage: "/other/?ref=ga4",
+                        sessions: 50,
+                      },
+                    ]
+                  : [ga4Result.rows[1]],
+              totalRowCount: source === "GA4" ? 2 : 1,
+            })
+          : makeGa4ReportResult({
+              ...ga4Result,
+              rows: [
+                {
+                  hostName: "example.com",
+                  landingPage: "/other",
+                  eventName: "lead_submitted",
+                  keyEvents: 7,
+                },
+              ],
+              totalRowCount: 1,
+            }),
+      );
+
+      const result = await SearchOpportunityService.getOpportunities({
+        projectId: "project_1",
+      });
+
+      expect(result.rows.length).toBe(source === "GSC" ? 2 : 1);
+      expect(
+        result.rows.every(
+          (row) =>
+            row.ga4 === null &&
+            row.score === null &&
+            row.leadOrPurchaseKeyEvents === null,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    {
+      finalQuota: { tokensPerDay: { consumed: 25, remaining: 75 } },
+      expected: 25,
+    },
+    { finalQuota: null, expected: 20 },
+  ])(
+    "uses the final key-events quota snapshot, with landing-report fallback when absent",
+    async ({ finalQuota, expected }) => {
+      onePage();
+      const landingQuota = {
+        tokensPerDay: { consumed: 20, remaining: 80 },
+      };
+      mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+        makeGa4ReportResult({
+          ...ga4Result,
+          rows:
+            kind === "key_events"
+              ? [
+                  {
+                    hostName: "example.com",
+                    landingPage: "/other",
+                    eventName: "lead_submitted",
+                    keyEvents: 1,
+                  },
+                ]
+              : ga4Result.rows,
+          totalRowCount: kind === "key_events" ? 1 : ga4Result.totalRowCount,
+          quota: kind === "landing_pages" ? landingQuota : finalQuota,
+        }),
+      );
+
+      const result = await SearchOpportunityService.getOpportunities({
+        projectId: "project_1",
+      });
+
+      expect(result.quota?.tokensPerDay?.consumed).toBe(expected);
+    },
+  );
 });
