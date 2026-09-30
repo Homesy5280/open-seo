@@ -167,10 +167,10 @@ async function getOpportunities(
     offset: 0,
     channel: "organic_search",
   });
+  const outcomeRowsTruncated =
+    events.pageInfo.hasMore || events.totalRowCount > events.rows.length;
   const eventsComplete =
-    !events.pageInfo.hasMore &&
-    events.totalRowCount <= events.rows.length &&
-    !events.reportMetadata.hasLimitedData;
+    !outcomeRowsTruncated && !events.reportMetadata.hasLimitedData;
   const outcomesByPage = new Map<string, number | null>();
   let invalidOutcomeRows = 0;
   for (const row of events.rows) {
@@ -187,6 +187,7 @@ async function getOpportunities(
       continue;
     }
     const count = numberField(row, "keyEvents");
+    if (count === null) invalidOutcomeRows += 1;
     const previous = outcomesByPage.get(key);
     outcomesByPage.set(
       key,
@@ -257,7 +258,10 @@ async function getOpportunities(
             }
           : null,
         leadOrPurchaseKeyEvents:
-          normalizedPage && eventsComplete && invalidOutcomeRows === 0
+          normalizedPage &&
+          analytics &&
+          eventsComplete &&
+          invalidOutcomeRows === 0
             ? outcomesByPage.has(normalizedPage)
               ? outcomesByPage.get(normalizedPage)!
               : 0
@@ -366,7 +370,7 @@ async function getOpportunities(
     truncated: {
       gsc: gsc.rows.length >= 1_000,
       ga4: ga4.totalRowCount > ga4.rows.length,
-      outcomeEvents: !eventsComplete,
+      outcomeEvents: outcomeRowsTruncated,
       candidates: returned.length < candidates.length,
     },
     warnings: [
@@ -385,7 +389,7 @@ async function getOpportunities(
         : []),
     ],
     reportMetadata: ga4.reportMetadata,
-    quota: ga4.quota,
+    quota: events.quota ?? ga4.quota,
   };
 }
 
