@@ -358,7 +358,7 @@ export const getSearchOpportunitiesTool = {
   config: {
     title: "Get search opportunities",
     description:
-      "Join Search Console pages ranking in positions 4–20 with GA4 organic landing-page outcomes, then score matched opportunities by demand, lead/purchase event occurrences per session, and reachability. Tool starts and engagement are excluded from business value. Event counts do not prove unique leads, qualified consultations or clients. Unmatched, ambiguous or incomplete evidence stays unscored. Read-only and uses no OpenSEO credits.",
+      "Join Search Console pages ranking in positions 4–20 with GA4 organic landing-page outcomes, then score matched opportunities by demand, allowlisted lead/purchase GA4 key-event counts per session, and reachability. Tool starts and engagement are excluded from business value. Events without key-event designation are outside coverage. Key-event counts do not prove unique leads, qualified consultations or clients. Unmatched, ambiguous or incomplete evidence stays unscored. Read-only and uses no OpenSEO credits.",
     inputSchema: opportunityInputSchema,
     outputSchema: opportunityOutputSchema,
     annotations: {

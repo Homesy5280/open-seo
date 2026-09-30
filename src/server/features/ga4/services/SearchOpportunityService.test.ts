@@ -186,7 +186,7 @@ describe("SearchOpportunityService", () => {
       scoreComponents: null,
     });
     expect(result.scoring.businessValueMetric).toBe(
-      "leadOrPurchaseEventsPerSession",
+      "leadOrPurchaseKeyEventsPerSession",
     );
     expect(result.warnings).toContain("source_time_zones_differ");
   });
@@ -209,11 +209,11 @@ describe("SearchOpportunityService", () => {
     const result = await SearchOpportunityService.getOpportunities({
       projectId: "project_1",
     });
-    expect(result.rows[0].leadOrPurchaseEvents).toBe(0);
+    expect(result.rows[0].leadOrPurchaseKeyEvents).toBe(0);
     expect(result.rows[0].scoreComponents?.businessValue).toBe(0);
     expect(result.scoring).toMatchObject({
       engagementFallback: false,
-      businessValueMetric: "leadOrPurchaseEventsPerSession",
+      businessValueMetric: "leadOrPurchaseKeyEventsPerSession",
     });
   });
 
@@ -322,7 +322,7 @@ describe("SearchOpportunityService", () => {
       const result = await SearchOpportunityService.getOpportunities({
         projectId: "project_1",
       });
-      expect(result.rows[0].leadOrPurchaseEvents).toBeNull();
+      expect(result.rows[0].leadOrPurchaseKeyEvents).toBeNull();
       expect(result.rows[0].score).toBeNull();
     },
   );
@@ -366,5 +366,71 @@ describe("SearchOpportunityService", () => {
     });
     expect(result.coverage.matchedRows).toBe(0);
     expect(result.rows.every((row) => row.ga4 === null)).toBe(true);
+  });
+  it("labels only GA4 key-event coverage, not all recorded event occurrences", async () => {
+    onePage();
+    mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+      kind === "landing_pages"
+        ? ga4Result
+        : makeGa4ReportResult({ ...ga4Result, rows: [], totalRowCount: 0 }),
+    );
+    const result = await SearchOpportunityService.getOpportunities({
+      projectId: "project_1",
+    });
+    expect(result.rows[0].leadOrPurchaseKeyEvents).toBe(0);
+    expect(result.scoring.outcomeMeaning).toContain(
+      "excludes events without key-event designation",
+    );
+    expect(result.scoring.outcomeMeaning).toContain("not no leads");
+  });
+  it("refuses scoring when omitted landing rows could hide a URL collision", async () => {
+    onePage();
+    mocks.runGa4Report.mockImplementation(async ({ kind }) =>
+      kind === "landing_pages"
+        ? makeGa4ReportResult({
+            ...ga4Result,
+            totalRowCount: 1001,
+            pageInfo: { hasMore: true },
+          })
+        : makeGa4ReportResult({
+            ...ga4Result,
+            rows: [
+              {
+                hostName: "example.com",
+                landingPage: "/other",
+                eventName: "lead_submitted",
+                keyEvents: 10,
+              },
+            ],
+            totalRowCount: 1,
+          }),
+    );
+    const result = await SearchOpportunityService.getOpportunities({
+      projectId: "project_1",
+    });
+    expect(result.rows[0].score).toBeNull();
+    expect(result.scoring.scoreDataLimited).toBe(true);
+    expect(result.warnings).toContain("page_evidence_incomplete_unscored");
+  });
+  it("refuses duplicated GSC normalized pages without guessing an aggregate", async () => {
+    mocks.getPerformance.mockResolvedValue({
+      siteUrl: "https://example.com/",
+      rows: ["https://example.com/other", "https://example.com/other/?x=1"].map(
+        (page) => ({
+          keys: [page],
+          clicks: 1,
+          impressions: 100,
+          ctr: 0.01,
+          position: 10,
+        }),
+      ),
+    });
+    const result = await SearchOpportunityService.getOpportunities({
+      projectId: "project_1",
+    });
+    expect(result.coverage.ambiguousGscPages).toBe(1);
+    expect(
+      result.rows.every((row) => row.score === null && row.ga4 === null),
+    ).toBe(true);
   });
 });

@@ -33,7 +33,7 @@ type Candidate = {
     transactions: number | null;
     purchaseRevenue: number | null;
   } | null;
-  leadOrPurchaseEvents: number | null;
+  leadOrPurchaseKeyEvents: number | null;
   score: number | null;
   scoreComponents: {
     demand: number;
@@ -256,7 +256,7 @@ async function getOpportunities(
                   : null,
             }
           : null,
-        leadOrPurchaseEvents:
+        leadOrPurchaseKeyEvents:
           normalizedPage && eventsComplete && invalidOutcomeRows === 0
             ? outcomesByPage.has(normalizedPage)
               ? outcomesByPage.get(normalizedPage)!
@@ -273,18 +273,23 @@ async function getOpportunities(
     ): candidate is Candidate & { ga4: NonNullable<Candidate["ga4"]> } =>
       candidate.ga4 !== null,
   );
+  const pageEvidenceComplete =
+    !ga4.pageInfo.hasMore &&
+    ga4.totalRowCount <= ga4.rows.length &&
+    gsc.rows.length < 1_000;
   const scored = joined.filter(
     (candidate) =>
       candidate.ga4.sessions !== null &&
       candidate.ga4.sessions > 0 &&
-      candidate.leadOrPurchaseEvents !== null &&
+      candidate.leadOrPurchaseKeyEvents !== null &&
+      pageEvidenceComplete &&
       !ga4.reportMetadata.hasLimitedData,
   );
   const demand = percentileRanks(
     scored.map((candidate) => Math.log1p(candidate.impressions)),
   );
   const outcomeRates = scored.map(
-    (candidate) => candidate.leadOrPurchaseEvents! / candidate.ga4.sessions!,
+    (candidate) => candidate.leadOrPurchaseKeyEvents! / candidate.ga4.sessions!,
   );
   const businessValue = percentileRanks(outcomeRates);
   const reachability = percentileRanks(
@@ -335,13 +340,14 @@ async function getOpportunities(
     scoring: {
       formula:
         "round(100 * (0.5 * demand + 0.3 * businessValue + 0.2 * reachability))",
-      businessValueMetric: "leadOrPurchaseEventsPerSession",
+      businessValueMetric: "leadOrPurchaseKeyEventsPerSession",
       outcomeEventNames,
       outcomeMeaning:
-        "Event occurrences, not unique leads, qualified consultations or signed clients",
+        "GA4 key-event counts only; excludes events without key-event designation. Zero means no reported eligible key events, not no leads. Not unique leads, qualified consultations or signed clients",
       engagementFallback: false,
       scoreDataLimited:
         ga4.reportMetadata.hasLimitedData ||
+        !pageEvidenceComplete ||
         !eventsComplete ||
         invalidOutcomeRows > 0,
     },
@@ -364,6 +370,7 @@ async function getOpportunities(
       candidates: returned.length < candidates.length,
     },
     warnings: [
+      ...(!pageEvidenceComplete ? ["page_evidence_incomplete_unscored"] : []),
       ...(ambiguousGscPages ? ["ambiguous_normalized_gsc_pages_unjoined"] : []),
       ...ga4.warnings,
       ...events.warnings,
